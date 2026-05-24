@@ -3,10 +3,11 @@ import SwiftUI
 
 struct FloatingBarView: View {
     @ObservedObject var provider: RunningAppProvider
+    @AppStorage("hideRecentItems") private var hideRecentItems = false
 
     var body: some View {
         HStack(spacing: 6) {
-            if provider.apps.isEmpty {
+            if hideRecentItems || provider.apps.isEmpty {
                 Color.clear
                     .frame(maxWidth: .infinity)
             } else {
@@ -30,7 +31,7 @@ struct FloatingBarView: View {
 
 private struct DisplayCountMenu: View {
     @ObservedObject var provider: RunningAppProvider
-    @AppStorage("showMenuButton") private var showMenuButton = true
+    @AppStorage("hideRecentItems") private var hideRecentItems = false
 
     private let options = [3, 5, 8, 12]
 
@@ -47,8 +48,8 @@ private struct DisplayCountMenu: View {
 
             Divider()
 
-            Button(showMenuButton ? "Masquer le bouton menu" : "Afficher le bouton menu") {
-                showMenuButton.toggle()
+            Button(hideRecentItems ? "Afficher les éléments récents" : "Masquer les éléments récents") {
+                hideRecentItems.toggle()
             }
 
             Divider()
@@ -58,30 +59,20 @@ private struct DisplayCountMenu: View {
             }
             .keyboardShortcut("q")
         } label: {
-            Group {
-                if showMenuButton {
-                    Image(systemName: "ellipsis.circle.fill")
-                        .resizable()
-                        .symbolRenderingMode(.hierarchical)
-                        .frame(width: 18, height: 18)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                } else {
-                    Circle()
-                        .fill(Color.primary.opacity(0.35))
-                        .frame(width: 6, height: 6)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 11)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Image(systemName: hideRecentItems ? "eye.slash.circle.fill" : "ellipsis.circle.fill")
+                .resizable()
+                .symbolRenderingMode(.hierarchical)
+                .frame(width: 18, height: 18)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: showMenuButton ? 34 : 14)
+        .frame(width: 34)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(showMenuButton ? 0.08 : 0.02))
+                .fill(Color.primary.opacity(0.08))
         )
     }
 }

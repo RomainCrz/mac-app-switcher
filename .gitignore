@@ -3,5 +3,6 @@
 .swiftpm/
 prompt-exports/
 dist/
+Resources/*.iconset/
 xcuserdata/
 *.xcodeproj/project.xcworkspace/xcuserdata/
