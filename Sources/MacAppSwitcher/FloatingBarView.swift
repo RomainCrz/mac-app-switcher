@@ -30,6 +30,7 @@ struct FloatingBarView: View {
 
 private struct DisplayCountMenu: View {
     @ObservedObject var provider: RunningAppProvider
+    @AppStorage("showMenuButton") private var showMenuButton = true
 
     private let options = [3, 5, 8, 12]
 
@@ -43,21 +44,44 @@ private struct DisplayCountMenu: View {
                     Text("\(count) éléments").tag(count)
                 }
             }
+
+            Divider()
+
+            Button(showMenuButton ? "Masquer le bouton menu" : "Afficher le bouton menu") {
+                showMenuButton.toggle()
+            }
+
+            Divider()
+
+            Button("Quitter complètement") {
+                NSApplication.shared.terminate(nil)
+            }
+            .keyboardShortcut("q")
         } label: {
-            Image(systemName: "ellipsis.circle.fill")
-                .resizable()
-                .symbolRenderingMode(.hierarchical)
-                .frame(width: 18, height: 18)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Group {
+                if showMenuButton {
+                    Image(systemName: "ellipsis.circle.fill")
+                        .resizable()
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 18, height: 18)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                } else {
+                    Circle()
+                        .fill(Color.primary.opacity(0.35))
+                        .frame(width: 6, height: 6)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 11)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .frame(width: 34)
+        .frame(width: showMenuButton ? 34 : 14)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color.primary.opacity(0.08))
+                .fill(Color.primary.opacity(showMenuButton ? 0.08 : 0.02))
         )
     }
 }
