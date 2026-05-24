@@ -103,19 +103,18 @@ private struct AppButton: View {
             }
             .buttonStyle(.plain)
 
-            if isHovered {
-                Button {
-                    onRemove()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .resizable()
-                        .symbolRenderingMode(.hierarchical)
-                        .frame(width: 12, height: 12)
-                        .padding(.trailing, 6)
-                }
-                .buttonStyle(.plain)
-                .help("Retirer des récents")
+            Button {
+                onRemove()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .resizable()
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 12, height: 12)
+                    .padding(.trailing, 6)
+                    .opacity(isHovered ? 1 : 0.45)
             }
+            .buttonStyle(.plain)
+            .help("Retirer des récents")
         }
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
