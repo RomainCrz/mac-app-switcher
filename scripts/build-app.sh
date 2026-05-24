@@ -6,6 +6,7 @@ BUNDLE_ID="com.romaincrz.mac-app-switcher"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_DIR="$DIST_DIR/$APP_NAME.app"
+INSTALL_DIR="/Applications/$APP_NAME.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
@@ -53,4 +54,13 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 PLIST
 
 printf "Built %s\n" "$APP_DIR"
-printf "Open with: open %q\n" "$APP_DIR"
+
+if [[ -d "$INSTALL_DIR" ]]; then
+    printf "Removing existing %s\n" "$INSTALL_DIR"
+    rm -rf "$INSTALL_DIR"
+fi
+
+printf "Installing %s\n" "$INSTALL_DIR"
+cp -R "$APP_DIR" "$INSTALL_DIR"
+
+printf "Open with: open %q\n" "$INSTALL_DIR"

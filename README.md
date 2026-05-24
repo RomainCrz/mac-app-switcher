@@ -28,24 +28,21 @@ This creates:
 dist/MacAppSwitcher.app
 ```
 
+Then it replaces the installed app at:
+
+```text
+/Applications/MacAppSwitcher.app
+```
+
 Open it with:
 
 ```bash
-open dist/MacAppSwitcher.app
-```
-
-## Install locally
-
-Copy the generated app to `/Applications`:
-
-```bash
-cp -R dist/MacAppSwitcher.app /Applications/
 open /Applications/MacAppSwitcher.app
 ```
 
 ## Launch at login
 
-After copying the app to `/Applications`:
+After building/installing the app to `/Applications`:
 
 1. Open **System Settings**.
 2. Go to **General → Login Items & Extensions**.

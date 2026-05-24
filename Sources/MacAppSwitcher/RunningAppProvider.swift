@@ -27,6 +27,7 @@ final class RunningAppProvider: ObservableObject {
     private var displayedAppCountObserver: NSObjectProtocol?
     private var pendingActivationWorkItem: DispatchWorkItem?
     private var recentApplicationPIDs: [pid_t] = []
+    private var excludedRecentApplicationPIDs: Set<pid_t> = []
     private let activationStabilityDelay: TimeInterval = 0.8
 
     init(screenProvider: @escaping () -> NSScreen?) {
@@ -98,7 +99,9 @@ final class RunningAppProvider: ObservableObject {
             ? regularApps
             : regularApps.filter { visiblePIDs.contains($0.processIdentifier) }
 
-        let visibleApps = screenApps
+        let eligibleApps = screenApps.filter { !excludedRecentApplicationPIDs.contains($0.processIdentifier) }
+
+        let visibleApps = eligibleApps
             .sorted { lhs, rhs in
                 compareByRecentUsage(lhs, rhs)
             }
@@ -178,6 +181,13 @@ final class RunningAppProvider: ObservableObject {
         NotificationCenter.default.post(name: Self.displayedAppCountDidChange, object: nil)
     }
 
+    func removeFromRecent(_ app: RunningAppItem) {
+        let pid = app.application.processIdentifier
+        recentApplicationPIDs.removeAll { $0 == pid }
+        excludedRecentApplicationPIDs.insert(pid)
+        refresh()
+    }
+
     private func applyDisplayedAppCount(_ count: Int) {
         let clampedCount = min(max(count, 1), 12)
         guard maxDisplayedApps != clampedCount else { return }
@@ -206,6 +216,7 @@ final class RunningAppProvider: ObservableObject {
         guard app.activationPolicy == .regular, !app.isTerminated else { return }
 
         let pid = app.processIdentifier
+        excludedRecentApplicationPIDs.remove(pid)
         recentApplicationPIDs.removeAll { $0 == pid }
         recentApplicationPIDs.insert(pid, at: 0)
         recentApplicationPIDs = Array(recentApplicationPIDs.prefix(30))

@@ -14,7 +14,9 @@ struct FloatingBarView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(provider.apps) { app in
-                            AppButton(app: app)
+                            AppButton(app: app) {
+                                provider.removeFromRecent(app)
+                            }
                         }
                     }
                     .frame(minWidth: 638, alignment: .center)
@@ -79,24 +81,42 @@ private struct DisplayCountMenu: View {
 
 private struct AppButton: View {
     let app: RunningAppItem
+    let onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
-        Button {
-            app.application.activate(options: [.activateIgnoringOtherApps])
-        } label: {
-            HStack(spacing: 5) {
-                AppIconView(image: app.icon)
+        HStack(spacing: 4) {
+            Button {
+                app.application.activate(options: [.activateIgnoringOtherApps])
+            } label: {
+                HStack(spacing: 5) {
+                    AppIconView(image: app.icon)
 
-                Text(app.name)
-                    .lineLimit(1)
-                    .font(.caption)
+                    Text(app.name)
+                        .lineLimit(1)
+                        .font(.caption)
+                }
+                .padding(.leading, 8)
+                .padding(.trailing, isHovered ? 2 : 8)
+                .padding(.vertical, 5)
+                .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .buttonStyle(.plain)
+
+            if isHovered {
+                Button {
+                    onRemove()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .resizable()
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 12, height: 12)
+                        .padding(.trailing, 6)
+                }
+                .buttonStyle(.plain)
+                .help("Retirer des récents")
+            }
         }
-        .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(isHovered ? 0.16 : 0.08))
