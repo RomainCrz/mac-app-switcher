@@ -14,7 +14,7 @@ struct FloatingBarView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(provider.apps) { app in
-                            AppButton(app: app) {
+                            AppButton(app: app, provider: provider) {
                                 provider.activate(app)
                             } onRemove: {
                                 provider.removeFromRecent(app)
@@ -83,9 +83,11 @@ private struct DisplayCountMenu: View {
 
 private struct AppButton: View {
     let app: RunningAppItem
+    @ObservedObject var provider: RunningAppProvider
     let onActivate: () -> Void
     let onRemove: () -> Void
     @State private var isHovered = false
+    @State private var isWindowPopoverPresented = false
 
     var body: some View {
         HStack(spacing: 4) {
@@ -123,7 +125,70 @@ private struct AppButton: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.primary.opacity(isHovered ? 0.16 : 0.08))
         )
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            isHovered = hovering
+            if hovering, app.windows.count > 1 {
+                isWindowPopoverPresented = true
+            }
+        }
+        .popover(isPresented: $isWindowPopoverPresented, arrowEdge: .top) {
+            AppWindowsPopover(app: app, provider: provider) { window in
+                provider.activate(app, window: window)
+                isWindowPopoverPresented = false
+            }
+        }
+    }
+}
+
+private struct AppWindowsPopover: View {
+    let app: RunningAppItem
+    @ObservedObject var provider: RunningAppProvider
+    let onActivate: (WindowFocusTarget) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(app.name)
+                .font(.headline)
+
+            ForEach(app.windows) { window in
+                WindowRow(app: app, window: window, provider: provider) {
+                    onActivate(window)
+                }
+            }
+        }
+        .padding(10)
+        .frame(width: 280)
+    }
+}
+
+private struct WindowRow: View {
+    let app: RunningAppItem
+    let window: WindowFocusTarget
+    @ObservedObject var provider: RunningAppProvider
+    let onActivate: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                onActivate()
+            } label: {
+                Image(systemName: window.windowID == app.targetWindow?.windowID ? "circle.fill" : "circle")
+                    .font(.system(size: 8))
+                    .frame(width: 12)
+            }
+            .buttonStyle(.plain)
+            .help("Activer cette fenêtre")
+
+            TextField(
+                "Nom de la fenêtre",
+                text: Binding(
+                    get: { provider.displayName(for: window, in: app) },
+                    set: { provider.rename(window, in: app, to: $0) }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+            .font(.caption)
+        }
     }
 }
 

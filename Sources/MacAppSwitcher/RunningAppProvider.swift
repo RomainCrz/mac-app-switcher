@@ -3,10 +3,12 @@ import ApplicationServices
 import Combine
 import CoreGraphics
 
-struct WindowFocusTarget: Equatable {
+struct WindowFocusTarget: Identifiable, Equatable {
     let windowID: CGWindowID
     let title: String?
     let frame: CGRect
+
+    var id: CGWindowID { windowID }
 }
 
 struct RunningAppItem: Identifiable, Equatable {
@@ -15,9 +17,10 @@ struct RunningAppItem: Identifiable, Equatable {
     let icon: NSImage?
     let application: NSRunningApplication
     let targetWindow: WindowFocusTarget?
+    let windows: [WindowFocusTarget]
 
     static func == (lhs: RunningAppItem, rhs: RunningAppItem) -> Bool {
-        lhs.id == rhs.id && lhs.name == rhs.name && lhs.targetWindow == rhs.targetWindow
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.targetWindow == rhs.targetWindow && lhs.windows == rhs.windows
     }
 }
 
@@ -25,8 +28,10 @@ struct RunningAppItem: Identifiable, Equatable {
 final class RunningAppProvider: ObservableObject {
     @Published private(set) var apps: [RunningAppItem] = []
     @Published private(set) var maxDisplayedApps: Int
+    @Published private(set) var windowRenameRevision = 0
 
     private static let displayedAppCountKey = "displayedAppCount"
+    private static let windowCustomNamesKey = "windowCustomNames"
     private static let displayedAppCountDidChange = Notification.Name("RunningAppProviderDisplayedAppCountDidChange")
 
     private let screenProvider: () -> NSScreen?
@@ -35,6 +40,7 @@ final class RunningAppProvider: ObservableObject {
     private var displayedAppCountObserver: NSObjectProtocol?
     private var pendingActivationWorkItem: DispatchWorkItem?
     private var recentApplicationPIDs: [pid_t] = []
+    private var recentWindowIDsByPID: [pid_t: [CGWindowID]] = [:]
     private var excludedRecentApplicationPIDs: Set<pid_t> = []
     private let activationStabilityDelay: TimeInterval = 0.8
 
@@ -105,7 +111,7 @@ final class RunningAppProvider: ObservableObject {
 
         let screenApps = targetScreen == nil
             ? regularApps
-            : regularApps.filter { visibleWindowsByPID[$0.processIdentifier] != nil }
+            : regularApps.filter { !(visibleWindowsByPID[$0.processIdentifier]?.isEmpty ?? true) }
 
         let eligibleApps = screenApps.filter { !excludedRecentApplicationPIDs.contains($0.processIdentifier) }
 
@@ -115,13 +121,15 @@ final class RunningAppProvider: ObservableObject {
             }
             .prefix(maxDisplayedApps)
             .map { app in
-                let targetWindow = visibleWindowsByPID[app.processIdentifier]
+                let windows = sortedWindows(visibleWindowsByPID[app.processIdentifier] ?? [], for: app)
+                let targetWindow = windows.first
                 return RunningAppItem(
-                    id: itemID(for: app, targetWindow: targetWindow),
+                    id: itemID(for: app),
                     name: displayName(for: app),
                     icon: app.icon,
                     application: app,
-                    targetWindow: targetWindow
+                    targetWindow: targetWindow,
+                    windows: windows
                 )
             }
 
@@ -132,13 +140,13 @@ final class RunningAppProvider: ObservableObject {
         }
     }
 
-    private func visibleApplicationWindows(on screen: NSScreen) -> [pid_t: WindowFocusTarget] {
+    private func visibleApplicationWindows(on screen: NSScreen) -> [pid_t: [WindowFocusTarget]] {
         guard let windowInfos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
             return [:]
         }
 
         let screenFrame = coreGraphicsFrame(for: screen)
-        var bestWindowForPID: [pid_t: (target: WindowFocusTarget, area: CGFloat)] = [:]
+        var windowsByPID: [pid_t: [(target: WindowFocusTarget, area: CGFloat)]] = [:]
 
         for info in windowInfos {
             guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
@@ -167,16 +175,14 @@ final class RunningAppProvider: ObservableObject {
             let title = (info[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
             let target = WindowFocusTarget(windowID: windowNumber, title: title, frame: windowFrame)
 
-            if let currentBest = bestWindowForPID[pid] {
-                if intersectionArea > currentBest.area {
-                    bestWindowForPID[pid] = (target, intersectionArea)
-                }
-            } else {
-                bestWindowForPID[pid] = (target, intersectionArea)
-            }
+            windowsByPID[pid, default: []].append((target, intersectionArea))
         }
 
-        return bestWindowForPID.mapValues(\.target)
+        return windowsByPID.mapValues { windows in
+            windows
+                .sorted { lhs, rhs in lhs.area > rhs.area }
+                .map(\.target)
+        }
     }
 
     func setMaxDisplayedApps(_ count: Int) {
@@ -194,13 +200,17 @@ final class RunningAppProvider: ObservableObject {
     }
 
     func activate(_ app: RunningAppItem) {
-        if focusWindow(app.targetWindow, for: app.application) {
-            recordActivation(of: app.application)
+        activate(app, window: app.targetWindow)
+    }
+
+    func activate(_ app: RunningAppItem, window: WindowFocusTarget?) {
+        if focusWindow(window, for: app.application) {
+            recordActivation(of: app.application, window: window)
             return
         }
 
         app.application.activate(options: [.activateIgnoringOtherApps])
-        recordActivation(of: app.application)
+        recordActivation(of: app.application, window: window)
     }
 
     private func applyDisplayedAppCount(_ count: Int) {
@@ -220,14 +230,14 @@ final class RunningAppProvider: ObservableObject {
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor in
                 guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return }
-                self?.recordActivation(of: app)
+                self?.recordActivation(of: app, window: nil)
             }
         }
         pendingActivationWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + activationStabilityDelay, execute: workItem)
     }
 
-    private func recordActivation(of app: NSRunningApplication) {
+    private func recordActivation(of app: NSRunningApplication, window: WindowFocusTarget?) {
         guard app.activationPolicy == .regular, !app.isTerminated else { return }
 
         let pid = app.processIdentifier
@@ -235,7 +245,65 @@ final class RunningAppProvider: ObservableObject {
         recentApplicationPIDs.removeAll { $0 == pid }
         recentApplicationPIDs.insert(pid, at: 0)
         recentApplicationPIDs = Array(recentApplicationPIDs.prefix(30))
+
+        if let window {
+            var recentWindowIDs = recentWindowIDsByPID[pid] ?? []
+            recentWindowIDs.removeAll { $0 == window.windowID }
+            recentWindowIDs.insert(window.windowID, at: 0)
+            recentWindowIDsByPID[pid] = Array(recentWindowIDs.prefix(20))
+        }
+
         refresh()
+    }
+
+    func displayName(for window: WindowFocusTarget, in app: RunningAppItem) -> String {
+        let customName = customWindowNames[windowKey(for: window, app: app)]
+        return customName ?? window.title ?? app.name
+    }
+
+    func rename(_ window: WindowFocusTarget, in app: RunningAppItem, to name: String) {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = windowKey(for: window, app: app)
+        var names = customWindowNames
+
+        if trimmedName.isEmpty || trimmedName == window.title {
+            names.removeValue(forKey: key)
+        } else {
+            names[key] = trimmedName
+        }
+
+        UserDefaults.standard.set(names, forKey: Self.windowCustomNamesKey)
+        windowRenameRevision += 1
+    }
+
+    private var customWindowNames: [String: String] {
+        UserDefaults.standard.dictionary(forKey: Self.windowCustomNamesKey) as? [String: String] ?? [:]
+    }
+
+    private func windowKey(for window: WindowFocusTarget, app: RunningAppItem) -> String {
+        "\(app.application.bundleIdentifier ?? app.name)-\(window.windowID)"
+    }
+
+    private func sortedWindows(_ windows: [WindowFocusTarget], for app: NSRunningApplication) -> [WindowFocusTarget] {
+        let recentWindowIDs = recentWindowIDsByPID[app.processIdentifier] ?? []
+
+        return windows.sorted { lhs, rhs in
+            let lhsIndex = recentWindowIDs.firstIndex(of: lhs.windowID)
+            let rhsIndex = recentWindowIDs.firstIndex(of: rhs.windowID)
+
+            switch (lhsIndex, rhsIndex) {
+            case let (lhsIndex?, rhsIndex?):
+                if lhsIndex != rhsIndex { return lhsIndex < rhsIndex }
+            case (.some, .none):
+                return true
+            case (.none, .some):
+                return false
+            case (.none, .none):
+                break
+            }
+
+            return lhs.frame.width * lhs.frame.height > rhs.frame.width * rhs.frame.height
+        }
     }
 
     private func focusWindow(_ target: WindowFocusTarget?, for app: NSRunningApplication) -> Bool {
@@ -352,12 +420,8 @@ final class RunningAppProvider: ObservableObject {
         return displayName(for: lhs).localizedCaseInsensitiveCompare(displayName(for: rhs)) == .orderedAscending
     }
 
-    private func itemID(for app: NSRunningApplication, targetWindow: WindowFocusTarget?) -> String {
-        if let targetWindow {
-            return "\(app.processIdentifier)-\(targetWindow.windowID)"
-        }
-
-        return "\(app.processIdentifier)"
+    private func itemID(for app: NSRunningApplication) -> String {
+        "\(app.processIdentifier)"
     }
 
     private func coreGraphicsFrame(for screen: NSScreen) -> CGRect {
