@@ -123,11 +123,6 @@ private struct AppButton: View {
                 .buttonStyle(.plain)
                 .help("Voir les fenêtres")
                 .accessibilityLabel("Voir les fenêtres de \(app.name)")
-                .onHover { hovering in
-                    if hovering {
-                        isWindowPopoverPresented = true
-                    }
-                }
             }
 
             Button {
