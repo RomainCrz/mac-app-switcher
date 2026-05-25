@@ -1,15 +1,23 @@
 import AppKit
+import ApplicationServices
 import Combine
 import CoreGraphics
 
+struct WindowFocusTarget: Equatable {
+    let windowID: CGWindowID
+    let title: String?
+    let frame: CGRect
+}
+
 struct RunningAppItem: Identifiable, Equatable {
-    let id: Int32
+    let id: String
     let name: String
     let icon: NSImage?
     let application: NSRunningApplication
+    let targetWindow: WindowFocusTarget?
 
     static func == (lhs: RunningAppItem, rhs: RunningAppItem) -> Bool {
-        lhs.id == rhs.id && lhs.name == rhs.name
+        lhs.id == rhs.id && lhs.name == rhs.name && lhs.targetWindow == rhs.targetWindow
     }
 }
 
@@ -90,14 +98,14 @@ final class RunningAppProvider: ObservableObject {
 
     func refresh() {
         let targetScreen = screenProvider()
-        let visiblePIDs = targetScreen.map { visibleApplicationPIDs(on: $0) } ?? []
+        let visibleWindowsByPID = targetScreen.map { visibleApplicationWindows(on: $0) } ?? [:]
 
         let regularApps = NSWorkspace.shared.runningApplications
             .filter { $0.activationPolicy == .regular && !$0.isTerminated }
 
         let screenApps = targetScreen == nil
             ? regularApps
-            : regularApps.filter { visiblePIDs.contains($0.processIdentifier) }
+            : regularApps.filter { visibleWindowsByPID[$0.processIdentifier] != nil }
 
         let eligibleApps = screenApps.filter { !excludedRecentApplicationPIDs.contains($0.processIdentifier) }
 
@@ -107,11 +115,13 @@ final class RunningAppProvider: ObservableObject {
             }
             .prefix(maxDisplayedApps)
             .map { app in
-                RunningAppItem(
-                    id: app.processIdentifier,
+                let targetWindow = visibleWindowsByPID[app.processIdentifier]
+                return RunningAppItem(
+                    id: itemID(for: app, targetWindow: targetWindow),
                     name: displayName(for: app),
                     icon: app.icon,
-                    application: app
+                    application: app,
+                    targetWindow: targetWindow
                 )
             }
 
@@ -122,21 +132,17 @@ final class RunningAppProvider: ObservableObject {
         }
     }
 
-    private func visibleApplicationPIDs(on screen: NSScreen) -> Set<pid_t> {
+    private func visibleApplicationWindows(on screen: NSScreen) -> [pid_t: WindowFocusTarget] {
         guard let windowInfos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-            return []
+            return [:]
         }
 
-        let screenFramesByID = Dictionary(uniqueKeysWithValues: NSScreen.screens.compactMap { screen -> (NSNumber, CGRect)? in
-            guard let screenID = screen.screenID else { return nil }
-            return (screenID, coreGraphicsFrame(for: screen))
-        })
-        guard let targetScreenID = screen.screenID else { return [] }
-
-        var bestScreenForPID: [pid_t: (screenID: NSNumber, area: CGFloat)] = [:]
+        let screenFrame = coreGraphicsFrame(for: screen)
+        var bestWindowForPID: [pid_t: (target: WindowFocusTarget, area: CGFloat)] = [:]
 
         for info in windowInfos {
             guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let windowNumber = info[kCGWindowNumber as String] as? CGWindowID,
                   let layer = info[kCGWindowLayer as String] as? Int,
                   layer == 0,
                   let alpha = info[kCGWindowAlpha as String] as? Double,
@@ -150,28 +156,27 @@ final class RunningAppProvider: ObservableObject {
                   windowFrame.height > 80
             else { continue }
 
-            for (screenID, screenFrame) in screenFramesByID {
-                let intersection = windowFrame.intersection(screenFrame)
-                guard !intersection.isNull else { continue }
+            let intersection = windowFrame.intersection(screenFrame)
+            guard !intersection.isNull else { continue }
 
-                let intersectionArea = intersection.width * intersection.height
-                let windowArea = windowFrame.width * windowFrame.height
-                let coverage = intersectionArea / windowArea
-                guard intersectionArea > 10_000, coverage > 0.20 else { continue }
+            let intersectionArea = intersection.width * intersection.height
+            let windowArea = windowFrame.width * windowFrame.height
+            let coverage = intersectionArea / windowArea
+            guard intersectionArea > 10_000, coverage > 0.20 else { continue }
 
-                if let currentBest = bestScreenForPID[pid] {
-                    if intersectionArea > currentBest.area {
-                        bestScreenForPID[pid] = (screenID, intersectionArea)
-                    }
-                } else {
-                    bestScreenForPID[pid] = (screenID, intersectionArea)
+            let title = (info[kCGWindowName as String] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let target = WindowFocusTarget(windowID: windowNumber, title: title, frame: windowFrame)
+
+            if let currentBest = bestWindowForPID[pid] {
+                if intersectionArea > currentBest.area {
+                    bestWindowForPID[pid] = (target, intersectionArea)
                 }
+            } else {
+                bestWindowForPID[pid] = (target, intersectionArea)
             }
         }
 
-        return Set(bestScreenForPID.compactMap { pid, bestScreen in
-            bestScreen.screenID == targetScreenID ? pid : nil
-        })
+        return bestWindowForPID.mapValues(\.target)
     }
 
     func setMaxDisplayedApps(_ count: Int) {
@@ -186,6 +191,16 @@ final class RunningAppProvider: ObservableObject {
         recentApplicationPIDs.removeAll { $0 == pid }
         excludedRecentApplicationPIDs.insert(pid)
         refresh()
+    }
+
+    func activate(_ app: RunningAppItem) {
+        if focusWindow(app.targetWindow, for: app.application) {
+            recordActivation(of: app.application)
+            return
+        }
+
+        app.application.activate(options: [.activateIgnoringOtherApps])
+        recordActivation(of: app.application)
     }
 
     private func applyDisplayedAppCount(_ count: Int) {
@@ -223,6 +238,91 @@ final class RunningAppProvider: ObservableObject {
         refresh()
     }
 
+    private func focusWindow(_ target: WindowFocusTarget?, for app: NSRunningApplication) -> Bool {
+        guard let target else { return false }
+
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement]
+        else {
+            return false
+        }
+
+        let bestWindow = windows
+            .compactMap { window -> (window: AXUIElement, score: CGFloat)? in
+                let score = matchScore(for: window, target: target)
+                return score > 0 ? (window, score) : nil
+            }
+            .max { lhs, rhs in lhs.score < rhs.score }?
+            .window
+
+        guard let bestWindow else { return false }
+
+        app.activate(options: [.activateIgnoringOtherApps])
+        AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, bestWindow)
+        AXUIElementPerformAction(bestWindow, kAXRaiseAction as CFString)
+        return true
+    }
+
+    private func matchScore(for window: AXUIElement, target: WindowFocusTarget) -> CGFloat {
+        var score: CGFloat = 0
+
+        if let targetTitle = target.title,
+           let axTitle = stringAttribute(kAXTitleAttribute, from: window),
+           axTitle == targetTitle {
+            score += 1_000_000
+        }
+
+        if let frame = frame(of: window) {
+            let intersection = frame.intersection(target.frame)
+            if !intersection.isNull {
+                score += intersection.width * intersection.height
+            }
+
+            let distance = abs(frame.midX - target.frame.midX) + abs(frame.midY - target.frame.midY)
+            score -= min(distance, 10_000)
+        }
+
+        return score
+    }
+
+    private func stringAttribute(_ attribute: String, from element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    private func frame(of element: AXUIElement) -> CGRect? {
+        var positionValue: CFTypeRef?
+        var sizeValue: CFTypeRef?
+
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &positionValue) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success,
+              let positionValue,
+              let sizeValue,
+              CFGetTypeID(positionValue) == AXValueGetTypeID(),
+              CFGetTypeID(sizeValue) == AXValueGetTypeID()
+        else {
+            return nil
+        }
+
+        let positionAXValue = positionValue as! AXValue
+        let sizeAXValue = sizeValue as! AXValue
+
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        guard AXValueGetValue(positionAXValue, .cgPoint, &position),
+              AXValueGetValue(sizeAXValue, .cgSize, &size)
+        else {
+            return nil
+        }
+
+        return CGRect(origin: position, size: size)
+    }
+
     private func compareByRecentUsage(_ lhs: NSRunningApplication, _ rhs: NSRunningApplication) -> Bool {
         let lhsRecentIndex = recentApplicationPIDs.firstIndex(of: lhs.processIdentifier)
         let rhsRecentIndex = recentApplicationPIDs.firstIndex(of: rhs.processIdentifier)
@@ -250,6 +350,14 @@ final class RunningAppProvider: ObservableObject {
         }
 
         return displayName(for: lhs).localizedCaseInsensitiveCompare(displayName(for: rhs)) == .orderedAscending
+    }
+
+    private func itemID(for app: NSRunningApplication, targetWindow: WindowFocusTarget?) -> String {
+        if let targetWindow {
+            return "\(app.processIdentifier)-\(targetWindow.windowID)"
+        }
+
+        return "\(app.processIdentifier)"
     }
 
     private func coreGraphicsFrame(for screen: NSScreen) -> CGRect {

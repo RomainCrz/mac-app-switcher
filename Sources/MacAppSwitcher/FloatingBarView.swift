@@ -15,6 +15,8 @@ struct FloatingBarView: View {
                     HStack(spacing: 6) {
                         ForEach(provider.apps) { app in
                             AppButton(app: app) {
+                                provider.activate(app)
+                            } onRemove: {
                                 provider.removeFromRecent(app)
                             }
                         }
@@ -81,13 +83,14 @@ private struct DisplayCountMenu: View {
 
 private struct AppButton: View {
     let app: RunningAppItem
+    let onActivate: () -> Void
     let onRemove: () -> Void
     @State private var isHovered = false
 
     var body: some View {
         HStack(spacing: 4) {
             Button {
-                app.application.activate(options: [.activateIgnoringOtherApps])
+                onActivate()
             } label: {
                 HStack(spacing: 5) {
                     AppIconView(image: app.icon)
