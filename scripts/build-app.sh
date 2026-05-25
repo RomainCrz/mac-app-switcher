@@ -53,6 +53,8 @@ cat > "$CONTENTS_DIR/Info.plist" <<PLIST
 </plist>
 PLIST
 
+codesign --force --deep --sign - "$APP_DIR"
+
 printf "Built %s\n" "$APP_DIR"
 
 if [[ -d "$INSTALL_DIR" ]]; then

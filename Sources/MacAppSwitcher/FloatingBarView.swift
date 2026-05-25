@@ -108,6 +108,28 @@ private struct AppButton: View {
             }
             .buttonStyle(.plain)
 
+            if app.windows.count > 1 {
+                Button {
+                    isWindowPopoverPresented = true
+                } label: {
+                    Image(systemName: "rectangle.stack.fill")
+                        .resizable()
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width: 12, height: 12)
+                        .opacity(isHovered ? 1 : 0.55)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Voir les fenêtres")
+                .accessibilityLabel("Voir les fenêtres de \(app.name)")
+                .onHover { hovering in
+                    if hovering {
+                        isWindowPopoverPresented = true
+                    }
+                }
+            }
+
             Button {
                 onRemove()
             } label: {
@@ -127,9 +149,6 @@ private struct AppButton: View {
         )
         .onHover { hovering in
             isHovered = hovering
-            if hovering, app.windows.count > 1 {
-                isWindowPopoverPresented = true
-            }
         }
         .popover(isPresented: $isWindowPopoverPresented, arrowEdge: .top) {
             AppWindowsPopover(app: app, provider: provider) { window in
@@ -150,10 +169,16 @@ private struct AppWindowsPopover: View {
             Text(app.name)
                 .font(.headline)
 
-            ForEach(app.windows) { window in
-                WindowRow(app: app, window: window, provider: provider) {
-                    onActivate(window)
+            if provider.isAccessibilityTrusted {
+                ForEach(app.windows) { window in
+                    WindowRow(app: app, window: window, provider: provider) {
+                        onActivate(window)
+                    }
                 }
+            } else {
+                Text("Accès Accessibilité requis pour choisir une fenêtre.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(10)
@@ -167,28 +192,79 @@ private struct WindowRow: View {
     @ObservedObject var provider: RunningAppProvider
     let onActivate: () -> Void
 
+    @State private var isEditing = false
+    @State private var draftName = ""
+    @FocusState private var isNameFieldFocused: Bool
+
     var body: some View {
         HStack(spacing: 8) {
-            Button {
-                onActivate()
-            } label: {
+            if !isEditing {
+                Button {
+                    onActivate()
+                } label: {
+                    Image(systemName: window.windowID == app.targetWindow?.windowID ? "circle.fill" : "circle")
+                        .font(.system(size: 8))
+                        .frame(width: 12)
+                }
+                .buttonStyle(.plain)
+                .help("Activer cette fenêtre")
+            } else {
                 Image(systemName: window.windowID == app.targetWindow?.windowID ? "circle.fill" : "circle")
                     .font(.system(size: 8))
                     .frame(width: 12)
             }
-            .buttonStyle(.plain)
-            .help("Activer cette fenêtre")
 
-            TextField(
-                "Nom de la fenêtre",
-                text: Binding(
-                    get: { provider.displayName(for: window, in: app) },
-                    set: { provider.rename(window, in: app, to: $0) }
-                )
-            )
-            .textFieldStyle(.roundedBorder)
-            .font(.caption)
+            if isEditing {
+                TextField("Nom de la fenêtre", text: $draftName)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .focused($isNameFieldFocused)
+                    .onSubmit(commitRename)
+                    .onChange(of: isNameFieldFocused) { focused in
+                        if !focused {
+                            commitRename()
+                        }
+                    }
+                    .onAppear {
+                        draftName = provider.displayName(for: window, in: app)
+                        isNameFieldFocused = true
+                    }
+            } else {
+                Button {
+                    onActivate()
+                } label: {
+                    HStack {
+                        Text(provider.displayName(for: window, in: app))
+                            .lineLimit(1)
+                            .font(.caption)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Activer cette fenêtre")
+            }
+
+            Button {
+                draftName = provider.displayName(for: window, in: app)
+                isEditing = true
+            } label: {
+                Image(systemName: "pencil.circle.fill")
+                    .resizable()
+                    .symbolRenderingMode(.hierarchical)
+                    .frame(width: 14, height: 14)
+            }
+            .buttonStyle(.plain)
+            .help("Renommer")
         }
+    }
+
+    private func commitRename() {
+        guard isEditing else { return }
+        provider.rename(window, in: app, to: draftName)
+        isEditing = false
+        isNameFieldFocused = false
     }
 }
 

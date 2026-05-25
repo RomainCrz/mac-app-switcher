@@ -1,13 +1,16 @@
 import AppKit
+import ApplicationServices
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var floatingBarControllers: [NSNumber: FloatingBarWindowController] = [:]
     private var primaryScreenID: NSNumber?
     private var screenRefreshTimer: Timer?
+    private static let promptedAccessibilityBuildKey = "promptedAccessibilityBuild"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         primaryScreenID = NSScreen.primaryScreenID
+        requestAccessibilityPermissionIfNeeded()
         syncBarsWithExternalScreens()
 
         NotificationCenter.default.addObserver(
@@ -30,6 +33,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screenParametersDidChange() {
         syncBarsWithExternalScreens()
+    }
+
+    private func requestAccessibilityPermissionIfNeeded() {
+        guard !AXIsProcessTrusted() else {
+            UserDefaults.standard.removeObject(forKey: Self.promptedAccessibilityBuildKey)
+            return
+        }
+
+        let currentBuild = accessibilityPromptBuildIdentifier()
+        guard UserDefaults.standard.string(forKey: Self.promptedAccessibilityBuildKey) != currentBuild else {
+            return
+        }
+
+        UserDefaults.standard.set(currentBuild, forKey: Self.promptedAccessibilityBuildKey)
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        AXIsProcessTrustedWithOptions(options)
+    }
+
+    private func accessibilityPromptBuildIdentifier() -> String {
+        guard let executablePath = Bundle.main.executablePath else { return "unknown" }
+        let modificationDate = (try? FileManager.default.attributesOfItem(atPath: executablePath)[.modificationDate] as? Date)
+        return "\(executablePath)-\(modificationDate?.timeIntervalSince1970 ?? 0)"
     }
 
     private func syncBarsWithExternalScreens() {

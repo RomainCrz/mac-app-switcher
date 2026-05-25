@@ -3,6 +3,9 @@ import ApplicationServices
 import Combine
 import CoreGraphics
 
+@_silgen_name("_AXUIElementGetWindow")
+private func AXUIElementGetWindowID(_ element: AXUIElement, _ identifier: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 struct WindowFocusTarget: Identifiable, Equatable {
     let windowID: CGWindowID
     let title: String?
@@ -29,6 +32,7 @@ final class RunningAppProvider: ObservableObject {
     @Published private(set) var apps: [RunningAppItem] = []
     @Published private(set) var maxDisplayedApps: Int
     @Published private(set) var windowRenameRevision = 0
+    @Published private(set) var isAccessibilityTrusted = false
 
     private static let displayedAppCountKey = "displayedAppCount"
     private static let windowCustomNamesKey = "windowCustomNames"
@@ -103,6 +107,11 @@ final class RunningAppProvider: ObservableObject {
     }
 
     func refresh() {
+        let accessibilityTrusted = AXIsProcessTrusted()
+        if isAccessibilityTrusted != accessibilityTrusted {
+            isAccessibilityTrusted = accessibilityTrusted
+        }
+
         let targetScreen = screenProvider()
         let visibleWindowsByPID = targetScreen.map { visibleApplicationWindows(on: $0) } ?? [:]
 
@@ -178,11 +187,23 @@ final class RunningAppProvider: ObservableObject {
             windowsByPID[pid, default: []].append((target, intersectionArea))
         }
 
-        return windowsByPID.mapValues { windows in
-            windows
+        return Dictionary(uniqueKeysWithValues: windowsByPID.map { pid, windows in
+            let activatableWindows: [(target: WindowFocusTarget, area: CGFloat)]
+
+            if isAccessibilityTrusted,
+               let accessibleWindows = accessibleApplicationWindows(for: pid, on: screenFrame),
+               !accessibleWindows.isEmpty {
+                activatableWindows = accessibleWindows
+            } else {
+                activatableWindows = windows.map { ($0.target, $0.area) }
+            }
+
+            let sortedTargets = activatableWindows
                 .sorted { lhs, rhs in lhs.area > rhs.area }
                 .map(\.target)
-        }
+
+            return (pid, sortedTargets)
+        })
     }
 
     func setMaxDisplayedApps(_ count: Int) {
@@ -211,6 +232,14 @@ final class RunningAppProvider: ObservableObject {
 
         app.application.activate(options: [.activateIgnoringOtherApps])
         recordActivation(of: app.application, window: window)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+            Task { @MainActor in
+                if self?.focusWindow(window, for: app.application) == true {
+                    self?.recordActivation(of: app.application, window: window)
+                }
+            }
+        }
     }
 
     private func applyDisplayedAppCount(_ count: Int) {
@@ -308,6 +337,7 @@ final class RunningAppProvider: ObservableObject {
 
     private func focusWindow(_ target: WindowFocusTarget?, for app: NSRunningApplication) -> Bool {
         guard let target else { return false }
+        guard AXIsProcessTrusted() else { return false }
 
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
         var windowsValue: CFTypeRef?
@@ -317,7 +347,8 @@ final class RunningAppProvider: ObservableObject {
             return false
         }
 
-        let bestWindow = windows
+        let exactWindow = windows.first { windowID(of: $0) == target.windowID }
+        let bestWindow = exactWindow ?? windows
             .compactMap { window -> (window: AXUIElement, score: CGFloat)? in
                 let score = matchScore(for: window, target: target)
                 return score > 0 ? (window, score) : nil
@@ -328,9 +359,50 @@ final class RunningAppProvider: ObservableObject {
         guard let bestWindow else { return false }
 
         app.activate(options: [.activateIgnoringOtherApps])
+        AXUIElementPerformAction(bestWindow, kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(bestWindow, kAXMainAttribute as CFString, kCFBooleanTrue)
+        AXUIElementSetAttributeValue(bestWindow, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         AXUIElementSetAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, bestWindow)
         AXUIElementPerformAction(bestWindow, kAXRaiseAction as CFString)
         return true
+    }
+
+    private func accessibleApplicationWindows(for pid: pid_t, on screenFrame: CGRect) -> [(target: WindowFocusTarget, area: CGFloat)]? {
+        let axApp = AXUIElementCreateApplication(pid)
+        var windowsValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &windowsValue) == .success,
+              let windows = windowsValue as? [AXUIElement]
+        else {
+            return nil
+        }
+
+        return windows.compactMap { window -> (target: WindowFocusTarget, area: CGFloat)? in
+            guard let windowID = windowID(of: window),
+                  let windowFrame = frame(of: window),
+                  windowFrame.width > 100,
+                  windowFrame.height > 80
+            else { return nil }
+
+            let intersection = windowFrame.intersection(screenFrame)
+            guard !intersection.isNull else { return nil }
+
+            let intersectionArea = intersection.width * intersection.height
+            let windowArea = windowFrame.width * windowFrame.height
+            let coverage = intersectionArea / windowArea
+            guard intersectionArea > 10_000, coverage > 0.20 else { return nil }
+
+            let title = stringAttribute(kAXTitleAttribute, from: window).flatMap { $0.isEmpty ? nil : $0 }
+            let target = WindowFocusTarget(windowID: windowID, title: title, frame: windowFrame)
+            return (target, intersectionArea)
+        }
+    }
+
+    private func windowID(of window: AXUIElement) -> CGWindowID? {
+        var windowID = CGWindowID(0)
+        guard AXUIElementGetWindowID(window, &windowID) == .success else {
+            return nil
+        }
+        return windowID
     }
 
     private func matchScore(for window: AXUIElement, target: WindowFocusTarget) -> CGFloat {
