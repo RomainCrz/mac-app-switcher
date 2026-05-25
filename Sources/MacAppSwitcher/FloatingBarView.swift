@@ -97,7 +97,7 @@ private struct AppButton: View {
                         .font(.caption)
                 }
                 .padding(.leading, 8)
-                .padding(.trailing, isHovered ? 2 : 8)
+                .padding(.trailing, 2)
                 .padding(.vertical, 5)
                 .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
